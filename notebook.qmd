@@ -1,0 +1,630 @@
+---
+title: "Untitled"
+editor: visual
+---
+
+## Scraping
+
+```{r}
+library(tidyverse)
+library(rvest)
+library(httr)
+```
+
+```{r}
+get_recipes <- function(page_number){ #returns link and name of the recipes
+  html <- read_html(paste("https://www.giallozafferano.it/ricette-cat/page", page_number, "/", sep=""))
+  recipes_links <- html %>%
+    html_elements(css = ".gz-title") %>%
+    html_elements("a") %>%
+    html_attr("href")
+  
+  recipes_names <- html |>
+    html_elements(css = ".gz-title") |>
+    html_text2()
+  
+  return (cbind(recipes_names, recipes_links))
+}
+
+number_of_pages <- function(){
+  html<- read_html("https://www.giallozafferano.it/ricette-cat/")
+  total_pages <- html |>
+    html_elements(css="span.disabled:nth-child(3)") |>
+    html_text() |>
+    as.integer()
+  return (total_pages)
+}
+
+clean_string <- function(x) {
+  # Remove parentheses part
+  x <- gsub("\\([^)]*\\)", "", x)
+  
+  # Replace strings that contain "q.b." with "q.b."
+  x[grepl("q\\.b\\.", x, ignore.case = TRUE)] <- "q.b."
+  
+  # Remove any character before the numbers
+  x[grepl("[0-9]", x)] <- sub("^[^0-9]*", "", x[grepl("[0-9]", x)])
+  
+  
+  
+  return(x)
+}
+
+find_image <- function(recipe) {
+  # Find the first picture tag
+  pictures <- recipe %>% 
+    html_nodes("picture.gz-featured-image")
+  
+  # Fallback: find a div with class `gz-featured-image-video gz-type-photo`
+  if (length(pictures) == 0) {
+    pictures <- recipe %>% 
+      html_nodes("div.gz-featured-image-video.gz-type-photo")
+  }
+  
+  imageSource <- pictures %>% 
+    html_nodes("img")
+  
+  # Most of the times the url is in the `data-src` attribute
+  imageURL <- imageSource %>% 
+    html_attr("data-src")
+  
+  # Fallback: if not found in `data-src` look for the `src` attr
+  if (is.na(imageURL)) {
+    imageURL <- imageSource %>% 
+      html_attr("src")
+  }
+  
+  return(imageURL)
+}
+
+get_data <- function(recipe_link){
+  recipe <- read_html(recipe_link)
+  
+  #get ingredients
+  ingredients <- recipe %>%
+    html_elements(css = ".gz-ingredient") |> # to select the whole gz-ingredients css class
+    html_element("a") |> # to select the hyperlink
+    html_text()
+  
+  quantities <- gsub('[\t\n]', '', recipe %>% #remove tabs and newlines
+                       html_elements(css = ".gz-ingredient") |> # to select the whole gz-ingredients css class
+                       html_element("span") |> # to select the span
+                       html_text2()|> # to select the text of span
+                       clean_string()  
+  )
+  ingredients <- cbind(ingredients, quantities)
+  
+  #get rating
+  rating <- gsub('[\t\n]', '', recipe |>
+    html_elements(css = "#rating_panel_top") |>
+    html_attr(name = "data-content-rate")
+      )
+  
+  #get tags
+  tags <- gsub('[\t\n]', '', recipe |>
+                   html_elements(css = ".gz-breadcrumb > ul:nth-child(1)") |>
+                   html_elements("li")|>
+                   html_text2()
+               
+  )
+  
+  #get description
+  description <- gsub('[\t\n]', '', recipe |>
+                 html_elements(css = "div.gz-content-recipe:nth-child(3)") |>
+                 html_text2()
+  )
+  
+  steps <- gsub('[\t\n]', '', recipe |>
+                   html_elements(css = ".gz-content-recipe-step") |>
+                   html_text2()
+  )
+  
+  #get summary
+  summary <- gsub('[\t\n]', '', recipe |> #contains tempo di cottura, dosi per, ecc
+                    html_elements(css = ".gz-list-featured-data") |>
+                    html_elements(css = ".gz-name-featured-data") |>
+                    html_text2()
+  ) 
+  
+  summary2 <- gsub('[\t\n]', '', recipe |> #contains vegan, lattosio, ecc
+                     html_elements(css = ".gz-list-featured-data-other") |>
+                     html_elements(css = ".gz-name-featured-data-other") |>
+                     html_text2()
+  ) 
+  
+  other <- gsub('[\t\n]', '', recipe |>
+                    html_elements(css = ".gz-content-recipe") |>
+                    html_elements(css = ".gz-text-expanded") |>
+                    html_text2()
+  ) 
+  conservation <- other[1]
+  suggestions <- other[2]
+  
+  image <- find_image(recipe)
+  
+  
+
+  return (list(ingredients, rating, tags, summary, summary2, description, steps, conservation, suggestions, image))
+}
+```
+
+```{r}
+scrape_all_pages <- function(){
+  total_pages <- number_of_pages()
+  data_list <- list()
+  names_list <- list()
+  result <- list()
+  
+  for (page in 1:total_pages){
+    print(paste("processing", page, "..."))
+    recipes <- get_recipes(page)
+    recipe_names <- recipes[, 1]
+    recipe_links <- recipes[, 2]
+    page_data_list <- lapply(recipe_links, get_data)
+    data_list <- append(data_list, page_data_list)
+    names_list <- append(names_list, recipe_names)
+  }
+
+  result <- mapply(function(names_list, data_list) list(names_list, data_list), 
+                   names_list, data_list, SIMPLIFY = FALSE)
+  return(result)
+}
+
+#data_pages <- scrape_all_pages()
+```
+
+## Creating the dataframe
+
+```{r}
+#You can uncomment the image links if you scraped it by yourself, unfortunately i lost the whole dataset with image links
+
+
+#import the large_dataset_rdata before running the code if you didn't scrape
+data_pages <- pages
+df <- data.frame(recipe_name = sapply(data_pages, "[[", 1))
+
+# extract the sublists
+sublists <- lapply(data_pages, `[[`, 2)
+
+# extract data from sublists
+matrix_list <- lapply(sublists, `[[`, 1)
+rating_list <- lapply(sublists, `[[`, 2)
+tags_list <- lapply(sublists, `[[`, 3)
+summary_list <- lapply(sublists, `[[`, 4)
+summary2_list <- lapply(sublists, `[[`, 5)
+description_list <- lapply(sublists, `[[`, 6)
+steps_list <- lapply(sublists, `[[`, 7)
+conservation_list <- lapply(sublists, `[[`, 8)
+suggestions_list <- lapply(sublists, `[[`, 9)
+#image_list <- lapply(sublists, `[[`, 10)
+ingredients_list <- lapply(matrix_list, function(x) x[, 1])
+quantity_list <- lapply(matrix_list, function(x) x[, 2])
+
+# insert data in the dataframe
+df$ingredients <- ingredients_list
+df$quantity <- quantity_list
+df$rating <- rating_list
+df$description <- description_list
+df$steps <- df$steps <- sapply(steps_list, paste, collapse = " ")
+df$conservation <- sapply(conservation_list, "[[", 1)
+df$tags <- Map(function(x,y) unlist(c(x,y)), tags_list, summary2_list )
+#df$image <- image_list
+
+
+summary_cols <- c("Difficoltà:", "Preparazione:", "Cottura:", "Dosi per:", "Costo:", "Nota")
+
+# Extract the values from the lists of strings
+values <- sapply(summary_list, function(x) {
+  sapply(summary_cols, function(y) {
+    val <- x[grepl(y, x)]
+    if (length(val) == 0) {
+      return(NA)
+    } else {
+      return(sub(paste0(y, " "), "", val))
+    }
+  })
+})
+
+# Convert to a dataframe and set column names
+df <- cbind(df, as.data.frame(t(values)))
+```
+
+## Creating Vertex = Recipes graph
+
+```{r}
+#Recipes are nodes connected by ingredients
+#Let's create the adjacency matrix
+
+# I remove Water and salt which is basically in every recipe
+ingredients_NOSA <- df$ingredients
+# We remove some ingredients that are too common, as water and salt
+for (i in 1:length(ingredients_NOSA)){
+  for (j in 1:length(ingredients_NOSA[i])){
+    ingredients_NOSA[[i]] <- setdiff(ingredients_NOSA[[i]], c("Acqua", "Sale fino"))
+  }
+}
+
+triangolize_and_remove_diagonal <- function(mat){
+  # Remove the diagonal elements from the matrix
+  mat[lower.tri(mat)] <- 0
+  diag(mat) <- 0
+  return (mat)
+}
+
+create_graph <- function(names, srecipe){
+#outer is a function that applies a function to every pair of elements from two vectors.
+  #In this case, we're applying the function to the srecipe list with itself.
+#Vectorize is a function that converts a function to a vectorized function.
+  #We use it to convert an anonymous function that checks if there are common
+  #strings between two elements of srecipe.
+#The anonymous function takes two arguments x and y, checks if there are common
+  #strings between them using any(x %in% y), and returns 1 if there are common strings, and 0 otherwise.
+sadj_mat <- triangolize_and_remove_diagonal(outer(srecipe, srecipe, Vectorize(function(x, y) as.integer(any(x %in% y)))))
+common_elements <- triangolize_and_remove_diagonal(outer(srecipe, srecipe, Vectorize(function(x, y) intersect(x, y))))
+common_elements_count <- triangolize_and_remove_diagonal(outer(srecipe, srecipe, Vectorize(function(x, y) length(intersect(x, y)))))
+  
+graph <- graph_from_adjacency_matrix(sadj_mat,weight=common_elements_count,  mode = "undirected")
+
+# Get the edge list of the graph
+edge_list <- get.edgelist(graph)
+
+# Subset the common_elements matrix using the edge list
+common_elements_vector <- common_elements[cbind(edge_list[, 1], edge_list[, 2])]
+
+# Assign the attributes to the graph edges
+E(graph)$common_ingredients <- common_elements_vector
+
+V(graph)$name <- names
+return (graph)
+}
+
+#let's do tests with a subset
+graph <- create_graph(df$recipe_name[4:13], recipe_ingredients_NOSA[4:13])
+
+E(graph)$weight <- sapply(E(graph)$common_ingredients, function(x) length(x))
+
+generate_colors <- function(x){
+  set.seed(123)
+  elem <- unique(unlist(x))
+  top_10_colors <- sample(colors(), length(elem), replace = FALSE)
+  t <- data.frame(ingredients = elem, color = top_10_colors)
+  return (t)
+}
+
+E(graph)$width <- E(graph)$weight * 2
+edge_colors <- rainbow(ecount(graph), alpha = 0.5)
+edge_label_color <- rainbow(ecount(graph))
+layout = layout.fruchterman.reingold(graph)
+plot(graph, 
+     vertex.size = 10,  # Increase node size
+     vertex.label = V(graph)$name,  # Show node names
+     vertex.label.cex = 1,  # Increase node label size
+     vertex.color = rgb(0, 0, 0, 0.5),
+     vertex.label.dist = 2,  # Move node labels away from nodes
+     edge.label = sapply(E(graph)$common_ingredients, function(x) {
+       paste(x, collapse = ", ")
+     }),
+     edge.label.cex = 0.5,  # Adjust edge label size
+     edge.color = edge_colors,  # Set edge colors
+     edge.label.color = edge_label_color,
+     layout = layout, 
+     main = "Graph of Recipe Similarity")
+
+g <- create_graph(df$recipe_name, df$ingredients_NOSA)
+```
+
+## Creating Vertex = Ingredients graph
+
+```{r}
+#let's build a network from the dataframe
+library(igraph)
+
+#We can build the network in 2 ways:
+#here ingredients are the vertex, connected by recipes
+
+triangolize_and_remove_diagonal <- function(mat){
+  # Remove the diagonal elements from the matrix
+  mat[lower.tri(mat)] <- 0
+  diag(mat) <- 0
+  return (mat)
+}
+
+create_graph <- function(names, srecipe){
+#outer is a function that applies a function to every pair of elements from two vectors. In this case, we're applying the function to the srecipe list with itself.
+#    Vectorize is a function that converts a function to a vectorized function. We use it to convert an anonymous function that checks if there are common strings between two elements of srecipe.
+#    The anonymous function takes two arguments x and y, checks if there are common strings between them using any(x %in% y), and returns 1 if there are common strings, and 0 otherwise.
+sadj_mat <- triangolize_and_remove_diagonal(outer(srecipe, srecipe, Vectorize(function(x, y) as.integer(any(x %in% y)))))
+common_elements <- triangolize_and_remove_diagonal(outer(srecipe, srecipe, Vectorize(function(x, y) intersect(x, y))))
+common_elements_count <- triangolize_and_remove_diagonal(outer(srecipe, srecipe, Vectorize(function(x, y) length(intersect(x, y)))))
+  
+graph <- graph_from_adjacency_matrix(sadj_mat,weight=common_elements_count,  mode = "undirected")
+#common_elements <- as.vector(common_elements[upper.tri(common_elements)]) # does not work because vectorization might not keep the order
+#common_elements <- common_elements[sapply(common_elements, length) > 0]
+#E(graph)$common_ingredients <- common_elements
+
+# Get the edge list of the graph
+edge_list <- get.edgelist(graph)
+
+# Subset the common_elements matrix using the edge list
+common_elements_vector <- common_elements[cbind(edge_list[, 1], edge_list[, 2])]
+
+# Assign the attributes to the graph edges
+E(graph)$common_recipes <- common_elements_vector
+
+V(graph)$name <- names
+return (graph)
+}
+
+generate_colors <- function(x){
+  set.seed(123)
+  elem <- unique(unlist(x))
+  top_10_colors <- sample(colors(), length(elem), replace = FALSE)
+  t <- data.frame(ingredients = elem, color = top_10_colors)
+  return (t)
+}
+```
+
+```{r}
+df<- new_giallozafferano_df
+
+ingredients_recipe <- data.frame(recipes = df$recipe_name)
+ingredients_recipe$ingredients <-df$ingredients
+
+ingredients_recipe <- ingredients_recipe %>% 
+  unnest(ingredients) |> # Unnest the ingredients column: we obtain a copy of the row for each ingredient
+  group_by(ingredients)|>
+  summarise((recipes = list(recipes))) #We group by the same recipe
+
+
+#####let's do tests with a subset
+graph <- create_graph(ingredients_recipe$ingredients[1000:1020], ingredients_recipe$`(recipes = list(recipes))`[1000:1020])
+
+edge_colors <- rainbow(ecount(graph), alpha = 0.5)
+edge_label_colors <- rainbow(ecount(graph))
+
+
+#edge_widths = common_elements_count
+E(graph)$weight <- sapply(E(graph)$common_recipes, function(x) length(x))
+# Scale the edge widths to a suitable range (e.g., 1-10)
+edge_widths = (E(graph)$weight - min(E(graph)$weight)) / (max(E(graph)$weight) - min(E(graph)$weight)) * 10 + 1
+
+g <- create_graph(ingredients_recipe$ingredients, ingredients_recipe$`(recipes = list(recipes))`)
+
+
+
+
+plot(graph, 
+     vertex.size = 2,  # Increase node size
+     vertex.label = V(graph)$name,  # Show node names
+     vertex.label.cex = 0.5,  # Increase node label size
+     vertex.label.dist = 0.5,  # Move node labels away from nodes
+     vertex.color = rgb(0,0,0,0.5),
+     edge.label = sapply(E(graph)$common_recipes, function(x) {
+       x <- x[1:min(c(2, length(x)))]
+       paste(x, collapse = "\n,")
+     }),
+     edge.label.cex = 0.3,  # Adjust edge label size
+     edge.color = edge_colors,
+     edge.label.color = edge_label_colors,
+     layout = layout.fruchterman.reingold, 
+     main = "Graph of Ingredients Similarity")
+
+V(g)$name
+
+avg_degree <- mean(degree(g)) # it is definitely too dense, 4184 avg degree
+
+
+names <- ingredients_recipe$ingredients
+```
+
+### Rating of an edge
+
+```{r}
+rating<- function(x) {
+  #takes an edge and returns a list of ratings
+  t <- sapply(x$common_recipes, function(z) { df |>
+      filter(recipe_name==z) |>
+      select(rating) |>
+      unlist()
+     })
+  t <- as.numeric(gsub(",", ".", t))
+  t <- sum(t)/x$weight
+  return (t)
+  }
+rating <- Vectorize(rating)
+ratings <- rating(E(g))
+E(g)$rating <- ratings
+ratings
+```
+
+#### Are there ingredients that make recipes special?
+
+```{r}
+library(ggplot2)
+
+bins <- c(1.1, 3.9, 4.2, 4.3, 4.4, 4.5, 4.7, 4.99, 5)
+labels <- c("1-1.1", "3.9-4.2", "4.2-4.3", "4.3-4.4", "4.4-4.5", "4.5-4.7", "4.7-4.9", "4.99-5")
+
+data_cut <- cut(ratings, breaks = bins, include.lowest = TRUE)
+freq <- table(data_cut)
+percent <- freq / sum(freq) * 100
+
+data <- data.frame(value = as.vector(percent), group = labels)
+
+data <- data %>% 
+  arrange(desc(group)) %>%
+  mutate(prop = value / sum(value) *100) %>%
+  mutate(ypos = cumsum(prop)- 0.5*prop )
+
+ggplot(data, aes(x="", y=prop, fill=group)) +
+  geom_bar(stat="identity", width=1, color="white") +
+  coord_polar("y", start=0) +
+  theme_void() + 
+  theme(legend.position="none") +
+  
+  geom_text(aes(y = ypos, label = group), color = "black", size=3) +
+  scale_fill_brewer(palette="Set1")
+
+# ingredients connected by 5 stars edges
+
+g1_e <- E(g)[which(E(g)$rating == 5)] # edges with 5 stars
+g1_v <- ends(g, g1_e) #vertex connected by 5 star edges
+
+g1 <- graph(c(g1_v[,1], g1_v[,2]), dir = FALSE) # simplify to remove self loops
+g1 <- igraph::simplify(g1, remove.loops = TRUE)
+degree <- degree(g1)
+scaled_degree <- (degree - min(degree)) / (max(degree) - min(degree)) * 5 + 1
+
+colors <- sample(colors(), length(V(g1)), replace = TRUE)
+rgb_colors <- t(apply(col2rgb(colors), 2, function(x) x/255))
+colors_with_alpha <- apply(rgb_colors, 1, function(x) rgb(x[1], x[2], x[3], 0.5))
+
+plot(g1,
+     vertex.size = scaled_degree,
+     vertex.label = V(g1)$name,
+     vertex.color = colors_with_alpha,
+     vertex.frame.color = NA,
+     vertex.label.color = colors,
+     vertex.label.cex = 0.1,
+     vertex.label.border = "black",
+     vertex.label.dist = 0.1,
+     edge.arrow.size = 0.1,
+     edge.width = 0.1,
+     margin = -0.1)
+
+
+# ingredients connected by 3.5 or lower stars edges
+
+g2_e <- E(g)[which(E(g)$rating <= 3.5)] # edges with 5 stars
+g2_v <- ends(g, g2_e) #vertex connected by 5 star edges
+
+g2 <- graph(c(g2_v[,1], g2_v[,2]), dir = FALSE) # simplify to remove self loops
+g2 <- igraph::simplify(g2, remove.loops = TRUE)
+degree <- degree(g2)
+scaled_degree <- (degree - min(degree)) / (max(degree) - min(degree)) * 5 + 1
+
+colors <- sample(colors(), length(V(g2)), replace = TRUE)
+rgb_colors <- t(apply(col2rgb(colors), 2, function(x) x/255))
+colors_with_alpha <- apply(rgb_colors, 1, function(x) rgb(x[1], x[2], x[3], 0.5))
+
+plot(g2,
+     vertex.size = scaled_degree,
+     vertex.label = V(g2)$name,
+     vertex.color = colors_with_alpha,
+     vertex.frame.color = NA,
+     vertex.label.color = colors,
+     vertex.label.cex = 0.1,
+     vertex.label.border = "black",
+     vertex.label.dist = 0.1,
+     edge.arrow.size = 0.1,
+     edge.width = 0.1,
+     edge.color = "brown",
+     margin = -0.1)
+
+# Compute difference
+
+# Find the vertices that are in g1 but not in g2
+vertices_to_keep <- setdiff(V(g1), V(g2))
+
+g3 <- induced_subgraph(g1, vertices_to_keep)
+
+degree <- degree(g3)
+scaled_degree <- (degree - min(degree)) / (max(degree) - min(degree)) * 5 + 1
+
+colors <- sample(colors(), length(V(g3)), replace = TRUE)
+rgb_colors <- t(apply(col2rgb(colors), 2, function(x) x/255))
+colors_with_alpha <- apply(rgb_colors, 1, function(x) rgb(x[1], x[2], x[3], 0.5))
+text_colors <- apply(rgb_colors, 1, function(x) rgb(max(0, x[1]-10), max(0, x[2]-10), max(x[3]-10, 0), 1))
+
+plot(g3,
+     vertex.size = scaled_degree,
+     vertex.label = V(g3)$name,
+     vertex.color = colors_with_alpha,
+     vertex.frame.color = NA,
+     vertex.label.color = text_colors,
+     vertex.label.cex = 0.1,
+     vertex.label.bg = "black",  # add a white background
+     vertex.label.dist = 0.1,
+     edge.arrow.size = 0.1,
+     edge.width = 0.1,
+     margin = -0.1)
+
+print(V(g3)$name)
+
+# Find the vertices that are in g2 but not in g1
+vertices_to_keep <- setdiff(V(g2), V(g1))
+
+g3 <- induced_subgraph(g2, vertices_to_keep)
+
+degree <- degree(g3)
+scaled_degree <- (degree - min(degree)) / (max(degree) - min(degree)) * 5 + 1
+
+colors <- sample(colors(), length(V(g3)), replace = TRUE)
+rgb_colors <- t(apply(col2rgb(colors), 2, function(x) x/255))
+colors_with_alpha <- apply(rgb_colors, 1, function(x) rgb(x[1], x[2], x[3], 0.5))
+text_colors <- apply(rgb_colors, 1, function(x) rgb(max(0, x[1]-10), max(0, x[2]-10), max(x[3]-10, 0), 1))
+
+plot(g3,
+     vertex.size = scaled_degree,
+     vertex.label = V(g3)$name,
+     vertex.color = colors_with_alpha,
+     vertex.frame.color = NA,
+     vertex.label.color = text_colors,
+     vertex.label.cex = 0.1,
+     vertex.label.bg = "black",  # add a white background
+     vertex.label.dist = 0.1,
+     edge.arrow.size = 0.1,
+     edge.width = 0.1,
+     margin = -0.1)
+
+print(V(g3)$name)
+```
+
+## Some statistics of networks
+
+```{r}
+cool_hist <- function(values, names, n, y_label){
+  library(ggplot2)
+  #helper function to plot a pretty cool histogram
+  set.seed(123)
+  top_10_colors <- sample(colors(), n, replace = FALSE)
+  
+  df <- data.frame(val = values)
+  
+  df$ingredient <- names
+  
+  top_10 <- df %>%
+    arrange(desc(val)) %>%
+    head(n)
+  
+  df$color <- ifelse(df$ingredient %in% top_10$ingredient, 
+                                    top_10_colors[match(df$ingredient, top_10$ingredient)], 
+                                    "gray")
+  
+  library(ggrepel)
+  
+  ggplot(df, aes(x = ingredient, y = val, color = color)) + 
+    geom_bar(stat = "identity") + 
+    geom_text_repel(aes(label = ifelse(df$val %in% tail(sort(df$val), n), df$ingredient, "")),
+                    angle = 90,
+                    vjust = 1,
+                    hjust = -0.5,
+                    direction = "x",
+                    max.overlaps = 10) + 
+    labs(x = "", y = y_label) + 
+    theme_classic() + 
+    theme(legend.position = "none", 
+          axis.text.x = element_blank())
+  
+}
+
+#Degree centrality measures the number of edges incident on a node (ingredient). Higher values indicate more connections.
+deg = degree(g, mode = "all")
+cool_hist(deg, V(g)$name, 20, "Degree_centrality")
+
+
+
+#Betweenness centrality measures the proportion of shortest paths that pass through a node. Higher values indicate a node is more critical in connecting other nodes.
+betweenness_centrality <- betweenness(g)
+cool_hist(betweenness_centrality, V(g)$name, 20, "Betweenness centrality")
+```
